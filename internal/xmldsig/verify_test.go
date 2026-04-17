@@ -22,6 +22,6 @@ func TestVerifyEnvelopedGOST2012Sample1XML(t *testing.T) {
 	}
 	_, err = VerifyEnvelopedGOST2012(data)
 	if err != nil {
-		t.Skipf("полная проверка подписи недоступна в этом окружении или для этой связки ключ/подпись: %v", err)
+		t.Fatal(err)
 	}
 }

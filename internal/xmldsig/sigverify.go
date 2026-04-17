@@ -12,7 +12,7 @@ func reverseBytes(b []byte) []byte {
 	return o
 }
 
-// VerifyGOST34Signature tries common GOST R 34.10-2012 encodings (CryptoPro / PKCS quirks).
+// VerifyGOST34Signature tries common GOST R 34.10-2012 signature encodings found in Russian certs/XMLDSig.
 func VerifyGOST34Signature(pub *gost3410.PublicKey, dgst, sig []byte) bool {
 	if len(sig) != 64 {
 		return false

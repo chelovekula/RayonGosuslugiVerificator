@@ -11,50 +11,36 @@ import (
 
 // jsonResponse — стабильная схема ответа (stdout).
 type jsonResponse struct {
-	Success bool   `json:"success"`
-	File    string `json:"file"`
-
-	ReferenceIntegrityOK bool `json:"reference_integrity_ok"`
-
-	Signature struct {
-		OK             bool   `json:"ok"`
-		Note           string `json:"note,omitempty"`
-		XMLSecFallback bool   `json:"xmlsec_fallback,omitempty"`
-	} `json:"signature"`
-
-	Certificate *jsonCert `json:"certificate,omitempty"`
-
-	Chain *jsonChain `json:"chain,omitempty"`
-
-	Policy *jsonPolicy `json:"policy,omitempty"`
-
-	CryptoProCryptCPPath string `json:"cryptopro_cryptcp_path,omitempty"`
-
-	Error string `json:"error,omitempty"`
+	Valid        bool             `json:"valid"`
+	File         string           `json:"file"`
+	DocumentType string           `json:"document_type,omitempty"`
+	Integrity    jsonStatus       `json:"integrity"`
+	Signature    jsonStatus       `json:"signature"`
+	Trust        *jsonTrust       `json:"trust,omitempty"`
+	Certificate  *jsonCertificate `json:"certificate,omitempty"`
+	Error        string           `json:"error,omitempty"`
 }
 
-type jsonCert struct {
-	Subject   string `json:"subject,omitempty"`
-	Issuer    string `json:"issuer,omitempty"`
-	NotBefore string `json:"not_before,omitempty"`
-	NotAfter  string `json:"not_after,omitempty"`
+type jsonStatus struct {
+	OK      bool   `json:"ok"`
+	Message string `json:"message"`
 }
 
-type jsonChain struct {
-	Requested bool `json:"requested"`
-	OK        bool `json:"ok,omitempty"`
+type jsonTrust struct {
+	OK      bool   `json:"ok"`
+	Message string `json:"message"`
+	Signer  string `json:"signer,omitempty"`
+	Issuer  string `json:"issuer,omitempty"`
+	Root    string `json:"root,omitempty"`
 }
 
-type jsonPolicy struct {
-	Requested bool `json:"requested"`
-	OK        bool `json:"ok,omitempty"`
+type jsonCertificate struct {
+	ValidFrom      string `json:"valid_from,omitempty"`
+	ValidTo        string `json:"valid_to,omitempty"`
+	CurrentlyValid bool   `json:"currently_valid"`
 }
 
 func main() {
-	caPath := flag.String("ca-path", "", "файл или каталог с доверенными корневыми/промежуточными PEM (openssl verify)")
-	policy := flag.Bool("policy-std-pfr", false, "проверить, что подписант похож на ПФР/СФР")
-	xmlsecFallback := flag.Bool("xmlsec-fallback", false, "при неудаче pure Go вызвать xmlsec1 --verify")
-	integrityOnly := flag.Bool("integrity-only", false, "проверять только DigestValue (без SignatureValue)")
 	pretty := flag.Bool("pretty", false, "форматировать JSON с отступами")
 	text := flag.Bool("text", false, "текстовый отчёт вместо JSON (stderr для ошибок чтения файла)")
 	flag.Usage = func() {
@@ -72,31 +58,33 @@ func main() {
 	emit := func(rep *verify.Report, path string, verr error) {
 		out := jsonResponse{File: path}
 		if rep != nil {
-			out.Success = verr == nil
-			out.ReferenceIntegrityOK = rep.ReferencesOK
-			out.Signature.OK = rep.SignatureOK
-			out.Signature.Note = rep.SignatureNote
-			out.Signature.XMLSecFallback = rep.XMLSecFallback
-			if rep.CertSubject != "" || rep.CertIssuer != "" || rep.CertNotBefore != "" {
-				out.Certificate = &jsonCert{
-					Subject:   rep.CertSubject,
-					Issuer:    rep.CertIssuer,
-					NotBefore: rep.CertNotBefore,
-					NotAfter:  rep.CertNotAfter,
+			out.Valid = verr == nil
+			out.DocumentType = rep.DocumentType
+			out.Integrity = jsonStatus{
+				OK:      rep.ReferencesOK,
+				Message: integrityMessage(rep.ReferencesOK),
+			}
+			out.Signature = jsonStatus{
+				OK:      rep.SignatureOK,
+				Message: rep.SignatureNote,
+			}
+			out.Trust = &jsonTrust{
+				OK:      rep.ChainOK,
+				Message: trustMessage(rep.ChainOK),
+				Signer:  rep.SignerName,
+				Issuer:  rep.IssuerName,
+				Root:    rep.TrustedRoot,
+			}
+			if rep.CertNotBefore != "" || rep.CertNotAfter != "" {
+				out.Certificate = &jsonCertificate{
+					ValidFrom:      rep.CertNotBefore,
+					ValidTo:        rep.CertNotAfter,
+					CurrentlyValid: rep.CertValidNow,
 				}
 			}
-			out.Chain = &jsonChain{Requested: *caPath != ""}
-			if *caPath != "" {
-				out.Chain.OK = rep.ChainOK
-			}
-			out.Policy = &jsonPolicy{Requested: *policy}
-			if *policy {
-				out.Policy.OK = rep.PolicyOK
-			}
-			out.CryptoProCryptCPPath = rep.CryptoProFound
 		}
 		if verr != nil {
-			out.Success = false
+			out.Valid = false
 			out.Error = verr.Error()
 		}
 		var b []byte
@@ -118,45 +106,41 @@ func main() {
 		if *text {
 			fmt.Fprintf(os.Stderr, "чтение файла: %v\n", err)
 		} else {
-			out := jsonResponse{Success: false, File: path, Error: fmt.Sprintf("чтение файла: %v", err)}
+			out := jsonResponse{
+				Valid: false,
+				File:  path,
+				Integrity: jsonStatus{
+					OK:      false,
+					Message: "Файл не прочитан",
+				},
+				Signature: jsonStatus{
+					OK:      false,
+					Message: "Подпись не проверена",
+				},
+				Error: fmt.Sprintf("чтение файла: %v", err),
+			}
 			b, _ := json.Marshal(out)
 			fmt.Println(string(b))
 		}
 		os.Exit(1)
 	}
 
-	rep, verr := verify.File(path, data, verify.Options{
-		CAPath:            *caPath,
-		PolicySTDPFR:      *policy,
-		TryXMLSecFallback: *xmlsecFallback,
-		IntegrityOnly:     *integrityOnly,
-	})
+	rep, verr := verify.File(path, data)
 
 	if *text {
 		if rep != nil {
-			fmt.Printf("Reference (целостность содержимого): OK\n")
-			if rep.SignatureOK {
-				fmt.Printf("Подпись SignedInfo: OK (%s)\n", rep.SignatureNote)
-			} else {
-				fmt.Printf("Подпись SignedInfo: не OK — %s\n", rep.SignatureNote)
+			fmt.Printf("Тип документа: %s\n", rep.DocumentType)
+			fmt.Printf("Целостность: %s\n", integrityMessage(rep.ReferencesOK))
+			fmt.Printf("Подпись: %s\n", rep.SignatureNote)
+			fmt.Printf("Доверие: %s\n", trustMessage(rep.ChainOK))
+			if rep.SignerName != "" {
+				fmt.Printf("Подписант: %s\n", rep.SignerName)
 			}
-			if rep.XMLSecFallback {
-				fmt.Printf("Использован xmlsec1 как запасной вариант.\n")
+			if rep.IssuerName != "" {
+				fmt.Printf("УЦ: %s\n", rep.IssuerName)
 			}
-			if rep.CryptoProFound != "" {
-				fmt.Printf("Обнаружен КриптоПро cryptcp: %s\n", rep.CryptoProFound)
-			}
-			if *caPath != "" && rep.ChainOK {
-				fmt.Printf("Цепочка до УЦ: OK\n")
-			}
-			if *policy && rep.PolicyOK {
-				fmt.Printf("Политика СТД-ПФР (подписант): OK\n")
-			}
-			if rep.CertSubject != "" {
-				fmt.Printf("Сертификат: %s\n", rep.CertSubject)
-			}
-			if rep.CertIssuer != "" {
-				fmt.Printf("Издатель: %s\n", rep.CertIssuer)
+			if rep.TrustedRoot != "" {
+				fmt.Printf("Корень доверия: %s\n", rep.TrustedRoot)
 			}
 			if rep.CertNotBefore != "" {
 				fmt.Printf("Действителен с: %s\n", rep.CertNotBefore)
@@ -164,6 +148,7 @@ func main() {
 			if rep.CertNotAfter != "" {
 				fmt.Printf("Действителен по: %s\n", rep.CertNotAfter)
 			}
+			fmt.Printf("Сертификат сейчас действителен: %t\n", rep.CertValidNow)
 		}
 		if verr != nil {
 			fmt.Fprintf(os.Stderr, "%v\n", verr)
@@ -175,4 +160,18 @@ func main() {
 	if verr != nil {
 		os.Exit(verify.ExitCode(verr))
 	}
+}
+
+func integrityMessage(ok bool) string {
+	if ok {
+		return "Файл не изменялся после подписания"
+	}
+	return "Целостность не подтверждена"
+}
+
+func trustMessage(ok bool) string {
+	if ok {
+		return "Подпись сделана доверенной государственной цепочкой"
+	}
+	return "Доверенная цепочка не подтверждена"
 }

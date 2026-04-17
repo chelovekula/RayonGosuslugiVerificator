@@ -1,58 +1,133 @@
 package pkix
 
 import (
-	"bytes"
 	"crypto/x509"
+	stdpkix "crypto/x509/pkix"
+	"embed"
+	"encoding/asn1"
 	"encoding/pem"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
+
+	"github.com/Automatch/RayonGosuslugiVerificator/internal/xmldsig"
+	"github.com/pedroalbanese/gogost/gost34112012256"
 )
 
-// VerifyChain runs `openssl verify` against PEM leaf and a CA directory or bundle.
-// Requires OpenSSL with GOST support to validate qualified certificates.
-func VerifyChain(leaf *x509.Certificate, caPath string) error {
-	if caPath == "" {
-		return nil
-	}
+//go:embed trust/*.pem
+var embeddedTrustFS embed.FS
+
+var oidSignWithDigestGost341012256 = asn1.ObjectIdentifier{1, 2, 643, 7, 1, 1, 3, 2}
+
+type rawCertificate struct {
+	TBSCertificate     asn1.RawValue
+	SignatureAlgorithm stdpkix.AlgorithmIdentifier
+	SignatureValue     asn1.BitString
+}
+
+// VerifyChain verifies that the leaf certificate is signed by one of the embedded trusted anchors.
+func VerifyChain(leaf *x509.Certificate) error {
+	_, _, err := VerifyChainDetailed(leaf)
+	return err
+}
+
+// VerifyChainDetailed returns the embedded trusted anchor that matched.
+func VerifyChainDetailed(leaf *x509.Certificate) (*x509.Certificate, string, error) {
 	if leaf == nil {
-		return fmt.Errorf("pkix: no certificate")
+		return nil, "", fmt.Errorf("pkix: no certificate")
 	}
-	tmpDir, err := os.MkdirTemp("", "stdpfr-pem-*")
+	anchors, source, err := loadTrustAnchors()
 	if err != nil {
-		return err
+		return nil, "", err
 	}
-	defer os.RemoveAll(tmpDir)
-	leafFile := filepath.Join(tmpDir, "leaf.pem")
-	b := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leaf.Raw})
-	if err := os.WriteFile(leafFile, b, 0600); err != nil {
-		return err
+	for _, parent := range anchors {
+		if !sameName(leaf.Issuer, parent.Subject) {
+			continue
+		}
+		if err := verifyCertSignedBy(leaf, parent); err == nil {
+			return parent, source, nil
+		}
 	}
+	return nil, source, fmt.Errorf("pkix: no trusted issuer certificate matched embedded trust store")
+}
 
-	openssl, err := exec.LookPath("openssl")
+func loadTrustAnchors() ([]*x509.Certificate, string, error) {
+	entries, err := embeddedTrustFS.ReadDir("trust")
 	if err != nil {
-		return fmt.Errorf("pkix: openssl: %w", err)
+		return nil, "", err
 	}
+	var certs []*x509.Certificate
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		b, err := embeddedTrustFS.ReadFile("trust/" + entry.Name())
+		if err != nil {
+			return nil, "", err
+		}
+		parsed, err := parseCertificates(b)
+		if err != nil {
+			return nil, "", fmt.Errorf("pkix: parse embedded trust %s: %w", entry.Name(), err)
+		}
+		certs = append(certs, parsed...)
+	}
+	if len(certs) == 0 {
+		return nil, "", fmt.Errorf("pkix: embedded trust store is empty")
+	}
+	return certs, "embedded", nil
+}
 
-	args := []string{"verify"}
-	st, err := os.Stat(caPath)
+func parseCertificates(data []byte) ([]*x509.Certificate, error) {
+	var certs []*x509.Certificate
+	rest := data
+	for {
+		block, tail := pem.Decode(rest)
+		if block == nil {
+			break
+		}
+		rest = tail
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		certs = append(certs, cert)
+	}
+	if len(certs) > 0 {
+		return certs, nil
+	}
+	cert, err := x509.ParseCertificate(data)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if st.IsDir() {
-		args = append(args, "-CApath", caPath)
-	} else {
-		args = append(args, "-CAfile", caPath)
-	}
-	args = append(args, leafFile)
+	return []*x509.Certificate{cert}, nil
+}
 
-	var out bytes.Buffer
-	cmd := exec.Command(openssl, args...)
-	cmd.Stderr = &out
-	cmd.Stdout = &out
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("openssl verify: %w: %s", err, out.String())
+func verifyCertSignedBy(child, parent *x509.Certificate) error {
+	var raw rawCertificate
+	if _, err := asn1.Unmarshal(child.Raw, &raw); err != nil {
+		return fmt.Errorf("pkix: parse child certificate: %w", err)
 	}
-	return nil
+	if !raw.SignatureAlgorithm.Algorithm.Equal(oidSignWithDigestGost341012256) {
+		return fmt.Errorf("pkix: unsupported certificate signature algorithm %v", raw.SignatureAlgorithm.Algorithm)
+	}
+	h := gost34112012256.New()
+	h.Write(child.RawTBSCertificate)
+	dgst := h.Sum(nil)
+
+	pubs, err := xmldsig.PublicKeyCandidates(parent.RawSubjectPublicKeyInfo)
+	if err != nil {
+		return fmt.Errorf("pkix: parent public key: %w", err)
+	}
+	sig := raw.SignatureValue.RightAlign()
+	for _, pub := range pubs {
+		if xmldsig.VerifyGOST34Signature(pub, dgst, sig) {
+			return nil
+		}
+	}
+	return fmt.Errorf("pkix: certificate signature verification failed for issuer %q", parent.Subject.String())
+}
+
+func sameName(a, b stdpkix.Name) bool {
+	return a.String() == b.String()
 }

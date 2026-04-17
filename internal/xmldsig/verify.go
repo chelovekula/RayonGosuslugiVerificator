@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	// Algorithm URIs used by СТД-ПФР / CryptoPro (IANA cpxmlsec registry).
+	// Algorithm URIs used by Russian XMLDSig / cpxmlsec registry.
 	AlgoGOST34102012_256   = "urn:ietf:params:xml:ns:cpxmlsec:algorithms:gostr34102012-gostr34112012-256"
 	DigestGOST34112012_256 = "urn:ietf:params:xml:ns:cpxmlsec:algorithms:gostr34112012-256"
 

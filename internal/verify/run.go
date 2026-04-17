@@ -1,127 +1,108 @@
 package verify
 
 import (
+	"bytes"
 	"crypto/x509"
 	"fmt"
 	"os"
 	"time"
 
-	"github.com/Automatch/RayonGosuslugiVerificator/internal/cryptopro"
 	"github.com/Automatch/RayonGosuslugiVerificator/internal/pkix"
-	"github.com/Automatch/RayonGosuslugiVerificator/internal/policy"
 	"github.com/Automatch/RayonGosuslugiVerificator/internal/xmldsig"
-	"github.com/Automatch/RayonGosuslugiVerificator/internal/xmlsec"
 )
-
-// Options controls verification steps.
-type Options struct {
-	CAPath            string
-	PolicySTDPFR      bool
-	TryXMLSecFallback bool
-	// IntegrityOnly checks Reference digests (and optional PKIX/policy) but not SignatureValue.
-	IntegrityOnly bool
-}
 
 // Report summarizes verification.
 type Report struct {
-	ReferencesOK   bool
-	SignatureOK    bool
-	SignatureNote  string
-	XMLSecFallback bool
-	CryptoProFound string
-	ChainOK        bool
-	PolicyOK       bool
-	CertSubject    string
-	CertIssuer     string
+	DocumentType  string
+	ReferencesOK  bool
+	SignatureOK   bool
+	SignatureNote string
+	ChainOK       bool
+	ChainSource   string
+	ChainAnchor   string
+	SignerName    string
+	IssuerName    string
+	TrustedRoot   string
 	// CertNotBefore/CertNotAfter — UTC RFC3339, если сертификат извлечён.
 	CertNotBefore string
 	CertNotAfter  string
+	CertValidNow  bool
 }
 
-// File runs digest check, signature (pure Go), optional xmlsec fallback, PKIX, policy.
-func File(path string, data []byte, o Options) (*Report, error) {
-	r := &Report{}
+// File runs digest check, signature, and PKIX validation.
+func File(_ string, data []byte) (*Report, error) {
+	r := &Report{
+		DocumentType: detectDocumentType(data),
+	}
 	if err := xmldsig.VerifyReferenceDigests(data); err != nil {
 		return r, fmt.Errorf("целостность Reference: %w", err)
 	}
 	r.ReferencesOK = true
 
-	var res *xmldsig.Result
-	var sigErr error
-	if !o.IntegrityOnly {
-		res, sigErr = xmldsig.VerifyEnvelopedGOST2012(data)
-		if sigErr == nil && res != nil {
-			r.SignatureOK = true
-			r.SignatureNote = "подпись SignedInfo проверена (ГОСТ 2012, pure Go)"
-			if res.Certificate != nil {
-				r.CertSubject = res.Certificate.Subject.String()
-				r.CertIssuer = res.Certificate.Issuer.String()
-			}
-		} else {
-			r.SignatureNote = sigErr.Error()
-			if o.TryXMLSecFallback {
-				if err := xmlsec.Verify(path); err == nil {
-					r.SignatureOK = true
-					r.XMLSecFallback = true
-					r.SignatureNote = "подпись проверена через xmlsec1"
-				}
-			}
+	res, sigErr := xmldsig.VerifyEnvelopedGOST2012(data)
+	if sigErr == nil && res != nil {
+		r.SignatureOK = true
+		r.SignatureNote = "Подпись криптографически подтверждена"
+		if res.Certificate != nil {
+			r.SignerName = displayName(res.Certificate.Subject.CommonName, res.Certificate.Subject.String())
+			r.IssuerName = displayName(res.Certificate.Issuer.CommonName, res.Certificate.Issuer.String())
 		}
 	} else {
-		r.SignatureOK = true
-		r.SignatureNote = "режим только целостности (DigestValue), SignatureValue не проверяется"
-		if c, err := xmldsig.LeafCertificateFromXML(data); err == nil {
-			r.CertSubject = c.Subject.String()
-			r.CertIssuer = c.Issuer.String()
-		}
-	}
-
-	if cp := cryptopro.FindCryptCP(); cp != "" {
-		r.CryptoProFound = cp
+		r.SignatureNote = "Подпись не подтверждена"
 	}
 
 	leafCert := leafFromResult(res)
 	if leafCert == nil {
 		if c, err := xmldsig.LeafCertificateFromXML(data); err == nil {
 			leafCert = c
-			if r.CertSubject == "" {
-				r.CertSubject = c.Subject.String()
-				r.CertIssuer = c.Issuer.String()
+			if r.SignerName == "" {
+				r.SignerName = displayName(c.Subject.CommonName, c.Subject.String())
+				r.IssuerName = displayName(c.Issuer.CommonName, c.Issuer.String())
 			}
 		}
 	}
 	if leafCert != nil {
 		r.CertNotBefore = leafCert.NotBefore.UTC().Format(time.RFC3339)
 		r.CertNotAfter = leafCert.NotAfter.UTC().Format(time.RFC3339)
+		now := time.Now().UTC()
+		r.CertValidNow = !now.Before(leafCert.NotBefore.UTC()) && !now.After(leafCert.NotAfter.UTC())
 	}
 
-	if o.CAPath != "" {
-		if leafCert == nil {
-			return r, fmt.Errorf("цепочка УЦ: не удалось извлечь сертификат из XML")
-		}
-		if err := pkix.VerifyChain(leafCert, o.CAPath); err != nil {
-			return r, fmt.Errorf("цепочка УЦ: %w", err)
-		}
-		r.ChainOK = true
+	if leafCert == nil {
+		return r, fmt.Errorf("цепочка УЦ: не удалось извлечь сертификат из XML")
 	}
-
-	if o.PolicySTDPFR {
-		if leafCert == nil {
-			return r, fmt.Errorf("policy: нет сертификата")
-		}
-		if err := policy.CheckSTDPFRSigner(leafCert); err != nil {
-			return r, err
-		}
-		r.PolicyOK = true
+	anchor, source, err := pkix.VerifyChainDetailed(leafCert)
+	if err != nil {
+		return r, fmt.Errorf("цепочка УЦ: %w", err)
 	}
-
-	if o.IntegrityOnly {
-		return r, nil
+	r.ChainOK = true
+	r.ChainSource = source
+	if anchor != nil {
+		r.ChainAnchor = anchor.Subject.String()
+		r.TrustedRoot = displayName(anchor.Subject.CommonName, anchor.Subject.String())
 	}
 	if !r.SignatureOK {
-		return r, fmt.Errorf("подпись SignedInfo: не подтверждена (%s)", r.SignatureNote)
+		return r, fmt.Errorf("подпись документа не подтверждена")
 	}
 	return r, nil
+}
+
+func detectDocumentType(data []byte) string {
+	switch {
+	case bytes.Contains(data, []byte("СТД-ПФР")):
+		return "СТД-ПФР"
+	case bytes.Contains(data, []byte("ЭДПФР")):
+		return "ЭДПФР"
+	default:
+		return "XML"
+	}
+}
+
+func displayName(commonName, fallback string) string {
+	if commonName != "" {
+		return commonName
+	}
+	return fallback
 }
 
 func leafFromResult(res *xmldsig.Result) *x509.Certificate {
