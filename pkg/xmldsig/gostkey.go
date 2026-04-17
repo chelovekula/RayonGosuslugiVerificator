@@ -122,3 +122,4 @@ func gostRawPublicKeyBytesFromBitString(bit []byte) ([]byte, error) {
 	}
 	return raw, nil
 }
+

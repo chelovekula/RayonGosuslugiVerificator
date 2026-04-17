@@ -27,3 +27,4 @@ func TestFileSample1XML(t *testing.T) {
 		t.Fatal("expected non-empty chain source")
 	}
 }
+

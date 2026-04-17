@@ -25,3 +25,4 @@ func TestVerifyEnvelopedGOST2012Sample1XML(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+

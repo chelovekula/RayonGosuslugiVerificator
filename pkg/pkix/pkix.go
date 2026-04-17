@@ -8,7 +8,7 @@ import (
 	"encoding/pem"
 	"fmt"
 
-	"github.com/Automatch/RayonGosuslugiVerificator/internal/xmldsig"
+	"github.com/Automatch/RayonGosuslugiVerificator/pkg/xmldsig"
 	"github.com/pedroalbanese/gogost/gost34112012256"
 )
 
@@ -131,3 +131,4 @@ func verifyCertSignedBy(child, parent *x509.Certificate) error {
 func sameName(a, b stdpkix.Name) bool {
 	return a.String() == b.String()
 }
+

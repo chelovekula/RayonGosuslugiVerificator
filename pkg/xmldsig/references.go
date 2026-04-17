@@ -27,3 +27,4 @@ func VerifyReferenceDigests(xmlData []byte) error {
 	}
 	return nil
 }
+

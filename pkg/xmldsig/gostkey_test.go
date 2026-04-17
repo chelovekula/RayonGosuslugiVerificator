@@ -38,3 +38,4 @@ func TestParseGOSTPublicKeyFromSampleXML(t *testing.T) {
 		t.Fatal("nil pubkey")
 	}
 }
+

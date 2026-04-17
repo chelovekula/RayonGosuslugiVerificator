@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/Automatch/RayonGosuslugiVerificator/internal/verify"
+	"github.com/Automatch/RayonGosuslugiVerificator/pkg/verify"
 )
 
 // jsonResponse — стабильная схема ответа (stdout).

@@ -1,8 +1,6 @@
 package xmldsig
 
-import (
-	"github.com/pedroalbanese/gogost/gost3410"
-)
+import "github.com/pedroalbanese/gogost/gost3410"
 
 func reverseBytes(b []byte) []byte {
 	o := make([]byte, len(b))
@@ -35,3 +33,4 @@ func VerifyGOST34Signature(pub *gost3410.PublicKey, dgst, sig []byte) bool {
 	}
 	return false
 }
+

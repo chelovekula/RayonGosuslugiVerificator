@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/Automatch/RayonGosuslugiVerificator/internal/xmldsig"
+	"github.com/Automatch/RayonGosuslugiVerificator/pkg/xmldsig"
 )
 
 func TestVerifyChainDetailedSample1XML(t *testing.T) {
@@ -24,3 +24,4 @@ func TestVerifyChainDetailedSample1XML(t *testing.T) {
 		t.Fatal("expected non-nil anchor")
 	}
 }
+

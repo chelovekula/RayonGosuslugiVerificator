@@ -24,3 +24,4 @@ func LeafCertificateFromXML(xmlData []byte) (*x509.Certificate, error) {
 	}
 	return x509.ParseCertificate(raw)
 }
+

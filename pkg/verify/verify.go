@@ -7,8 +7,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/Automatch/RayonGosuslugiVerificator/internal/pkix"
-	"github.com/Automatch/RayonGosuslugiVerificator/internal/xmldsig"
+	"github.com/Automatch/RayonGosuslugiVerificator/pkg/pkix"
+	"github.com/Automatch/RayonGosuslugiVerificator/pkg/xmldsig"
 )
 
 // Report summarizes verification.
@@ -124,3 +124,4 @@ func ExitCode(err error) int {
 func ReadFile(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
+

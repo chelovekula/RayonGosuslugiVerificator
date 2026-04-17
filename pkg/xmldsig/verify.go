@@ -247,3 +247,4 @@ func verifyReferenceDigest(ref *etree.Element, doc *etree.Document) error {
 	}
 	return nil
 }
+
